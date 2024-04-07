@@ -106,11 +106,17 @@ def calc_Hab_acc(Hb, v1):
 
 
 def calc_Hbe_acc(Hb, v2, tau):
+    if tau == 0:
+        assert v2 != 0, "We expected us to be stopping"
+        return -speed_of_wave_in_conduit / G * v2
     max_acceleration = speed_of_wave_in_conduit / G * max(abs(v2), 5 * u.meter_per_sec)
-    computed_acceleration = Hb - HE - (k2 + k3 + k_open / tau**2) * calc_velocity_head(v2)
+    computed_acceleration = (
+        Hb - HE - (k2 + k3 + k_open / tau**2) * calc_velocity_head(v2)
+    )
     if abs(computed_acceleration) > max_acceleration:
         return max_acceleration * (computed_acceleration / abs(computed_acceleration))
     return computed_acceleration
+
 
 def calc_dv(acc_head, length):
     return G / length * acc_head
@@ -132,7 +138,7 @@ def compute_derivates(v1, v2, Hs, tau, design_params):
     Hb = calc_Hb(Hs, vs)
     Hab_acc = calc_Hab_acc(Hb, v1)
     dv1 = calc_dv(Hab_acc, L1)
-    if tau == 0:
+    if tau == 0 and v2 == 0:
         dv2 = 0 * u.meter_per_sec_2
     else:
         Hbe_acc = calc_Hbe_acc(Hb, v2, tau)
@@ -168,8 +174,8 @@ class SimulationSettings:
 
 @dataclass
 class DesignParams:
-    D_ST: u.Quantity
-    event_duration: u.Quantity = 
+    D_ST: u.Quantity = 5 * u.meters
+    event_duration: u.Quantity = 3 * u.second
     height_of_widening: u.Quantity = 385 * u.meter
 
 
@@ -179,7 +185,7 @@ Snapshot = namedtuple("Snapshot", ["t", "v1", "v2", "Hs", "dv1", "dv2", "Pc", "P
 
 def simulate_system(
     scenario: Scenario,
-    design_params: DesignParams,
+    design_params=DesignParams(),
     settings=SimulationSettings(),
 ):
     start_event_time = settings.duration * 0.1
@@ -191,8 +197,8 @@ def simulate_system(
 
     while t < settings.duration + start_event_time:
         tau = calc_tau(scenario, t, design_params, start_event_time)
-        if tau == 0:
-            v2 = 0 * u.meter_per_sec
+        # if tau == 0:
+        #     v2 = 0 * u.meter_per_sec
         dv1, dv2, dHs, Hb, vs, Pc, Pd = compute_derivates(
             v1, v2, Hs, tau, design_params
         )
@@ -233,7 +239,7 @@ def optimize_open_time(opening_times=[2, 3]):
     for opening_time in opening_times:
         res_snapshots = simulate_system(
             LOAD_ACCEPTANCE,
-            DesignParams(D_ST=5 * u.meters, event_duration=opening_time * u.second),
+            DesignParams(event_duration=opening_time * u.second),
             settings,
         )
         t = np.array([s.t.magnitude for s in res_snapshots])
@@ -259,7 +265,7 @@ def optimize_closing_time(closing_times=[2, 3, 5, 10]):
     for closing_time in closing_times:
         res_snapshots = simulate_system(
             FULL_REJECTION,
-            DesignParams(D_ST=5 * u.meters, event_duration=closing_time * u.second),
+            DesignParams(event_duration=closing_time * u.second),
             settings=SimulationSettings(12 * u.second),
         )
         t = np.array([s.t.magnitude for s in res_snapshots])
@@ -286,7 +292,7 @@ def optimize_tank_diameter(
     for tank_diameter in tank_diameters:
         res_snapshots = simulate_system(
             FULL_REJECTION,
-            DesignParams(tank_diameter * u.meters, event_duration=3 * u.second),
+            DesignParams(tank_diameter * u.meters),
         )
         max_height = max(s.Hs for s in res_snapshots) + safety_margin
         extra_height = max_height - ss_HS
@@ -315,10 +321,7 @@ def optimize_tank_diameter(
 
 def visualize_main_scenarios():
     for scenario in [FULL_REJECTION, HALF_REJECTION, LOAD_ACCEPTANCE]:
-        res_snapshots = simulate_system(
-            scenario,
-            DesignParams(D_ST=5 * u.meters, event_duration=3 * u.second),
-        )
+        res_snapshots = simulate_system(scenario)
         plot_results(res_snapshots, label=scenario.name)
     plt.legend()
     plt.show()
