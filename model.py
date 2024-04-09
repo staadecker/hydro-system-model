@@ -42,6 +42,7 @@ u.meter_per_sec_2 = u.meter / u.second**2
 # Define constants for the system
 ############################################
 G = 9.81 * u.meter_per_sec_2  # Gravitational constant
+RHO = 1000 * u.kilogram / u.meter**3  # Density of water
 L1 = 3000 * u.meter  # Conduit 1 length
 L2 = 400 * u.meter  # Conduit 2 length
 L3 = 100 * u.meter  # Conduit 3 length
@@ -95,13 +96,15 @@ class DesignParams:
     # Defaults form our selected design
 
     # Diameter of the surge tank (above widening point)
-    surge_tank_diameter: u.Quantity = 8 * u.meters
+    surge_tank_diameter: u.Quantity = 10 * u.meters
 
     # Time to open/close the valve fully.
-    valve_operation_time: u.Quantity = 8 * u.second
+    valve_operation_time: u.Quantity = 5 * u.second
 
     # At this height the 3m conduit widens into to the surge tank
-    elevation_of_widening: u.Quantity = 290 * u.meter
+    elevation_of_widening: u.Quantity = 410 * u.meter
+
+    freeboard_height: u.Quantity = 3 * u.meters
 
 
 SELECTED_DESIGN = DesignParams()
@@ -116,6 +119,7 @@ class Scenario:
     start_tau: int
     end_tau: int
     initial_conditions: tuple  # (v1, v2, Hs)
+    plotting_color: str
 
 
 FULL_REJECTION = Scenario(
@@ -123,18 +127,21 @@ FULL_REJECTION = Scenario(
     start_tau=1,
     end_tau=0,
     initial_conditions=(ss_v, ss_v, ss_HS),
+    plotting_color="#ff6361",
 )
 HALF_REJECTION = Scenario(
     "Half load rejection",
     start_tau=1,
     end_tau=0.5,
     initial_conditions=(ss_v, ss_v, ss_HS),
+    plotting_color="#ffa600",
 )
 LOAD_ACCEPTANCE = Scenario(
     "Full load acceptance",
     start_tau=0,
     end_tau=1,
     initial_conditions=(0 * u.meter_per_sec, 0 * u.meter_per_sec, HA),
+    plotting_color="#458B74",
 )
 
 
@@ -182,7 +189,11 @@ def model_system(t, v1, v2, Hs, design_params, settings, scenario):
     Hd = HE + L3 / (L2 + L3) * Hbe_acc + (k3 + exit_loss) * calc_velocity_head(v2)
     Pc = Hc - zB
     Pd = Hd - zB
-    return dv1, dv2, dHs, Hb, Pc, Pd, tau
+    if t < settings.start_event_time:
+        Power_turbine = 0 * u.watt
+    else:
+        Power_turbine = A * RHO * G * v2 * (Hc - Hd)
+    return dv1, dv2, dHs, Hb, Pc, Pd, tau, Power_turbine
 
 
 ############################################
@@ -211,7 +222,7 @@ DEFAULT_SETTINGS = SimulationSettings()
 
 # Object to store the results of the simulation
 Snapshot = namedtuple(
-    "Snapshot", ["t", "v1", "v2", "Hs", "dv1", "dv2", "Pc", "Pd", "Hb"]
+    "Snapshot", ["t", "v1", "v2", "Hs", "dv1", "dv2", "Pc", "Pd", "Hb", "Power_turbine"]
 )
 
 
@@ -225,15 +236,13 @@ def simulate(
     results = []
 
     while t < settings.duration + settings.start_event_time:
-        dv1, dv2, dHs, Hb, Pc, Pd, tau = model_system(
+        dv1, dv2, dHs, Hb, Pc, Pd, tau, Power_turbine = model_system(
             t, v1, v2, Hs, design_params, settings, scenario
         )
         if tau == 0:
             v2 = 0 * u.meter_per_sec
         dt = calc_optimal_time_step((v1, v2, Hs), (dv1, dv2, dHs), settings, t)
-
-        if not (tau != 0 and v2 == 0):
-            results.append(Snapshot(t, v1, v2, Hs, dv1, dv2, Pc, Pd, Hb))
+        results.append(Snapshot(t, v1, v2, Hs, dv1, dv2, Pc, Pd, Hb, Power_turbine))
 
         # Update our variables
         t, v1, v2, Hs = (t + dt, v1 + dv1 * dt, v2 + dv2 * dt, Hs + dHs * dt)
@@ -255,90 +264,129 @@ def calc_optimal_time_step(vars, dvars, settings, t):
 ############################################
 # Visualization code
 ############################################
-def optimize_open_time(opening_times=[2, 3, 5, 8, 10]):
-    ax_v = plt.subplot(3, 1, 1)
-    ax_c = plt.subplot(3, 1, 2, sharex=ax_v)
-    ax_d = plt.subplot(3, 1, 3, sharex=ax_c)
+def optimize_operation_time():
+    times_to_test = [2, 3, 5, 8, 10]
+    plot_power = True  # Useful flag to make screenshots of plots for the report
+
+    ax_c_open = plt.subplot(3, 2, 1)
+    ax_d_open = plt.subplot(3, 2, 3, sharex=ax_c_open)
+
+    ax_c_close = plt.subplot(3, 2, 2)
+    ax_d_close = plt.subplot(3, 2, 4, sharex=ax_c_close)
+
+    if plot_power:
+        ax_power_close = plt.subplot(3, 2, 6, sharex=ax_c_close)
+    else:
+        ax_power_close = None
 
     settings = SimulationSettings(duration=12 * u.second)
 
-    for opening_time in opening_times:
-        res_snapshots = simulate(
-            LOAD_ACCEPTANCE,
-            DesignParams(valve_operation_time=opening_time * u.second),
-            settings,
-        )
-        t = np.array([s.t.magnitude for s in res_snapshots])
-        pressure_d = [s.Pd.magnitude for s in res_snapshots]
-        pressure_c = [s.Pc.magnitude for s in res_snapshots]
-        velocity_2 = [s.v2.magnitude for s in res_snapshots]
-        ax_d.plot(t, pressure_d, label=f"{opening_time} s")
-        ax_c.plot(t, pressure_c, label=f"{opening_time} s")
-        # ax_v.plot(t, velocity_1, label=f"{opening_time} s, v1")
-        ax_v.plot(t, velocity_2, label=f"{opening_time} s")
-
-    plt.xlabel("Time (s)")
-    # ax_v.legend(title="Opening time (s)")
-    ax_d.set_ylabel("Pressure at D (m)")
-    ax_c.set_ylabel("Pressure at C (m)")
-    ax_v.set_ylabel("Velocity 2 (m/s)")
-    plt.legend(title="Opening time (s)")
+    for scenario, ax_c, ax_d, ax_power in [
+        (LOAD_ACCEPTANCE, ax_c_open, ax_d_open, None),
+        (FULL_REJECTION, ax_c_close, ax_d_close, ax_power_close),
+    ]:
+        for operation_time in times_to_test:
+            res_snapshots = simulate(
+                scenario,
+                DesignParams(valve_operation_time=operation_time * u.second),
+                settings,
+            )
+            t = np.array([s.t.magnitude for s in res_snapshots])
+            pressure_d = [s.Pd.magnitude for s in res_snapshots]
+            pressure_c = [s.Pc.magnitude for s in res_snapshots]
+            ax_c.plot(t, pressure_c, label=f"{operation_time} s")
+            ax_d.plot(t, pressure_d, label=f"{operation_time} s")
+            if ax_power:
+                power = [s.Power_turbine.to("MW").magnitude for s in res_snapshots]
+                ax_power.plot(t, power, label=f"{operation_time} s")
+                ax_power.set_ylabel("Power absorbed\nby turbine (MW)")
+                ax_power.legend(title="Closing time")
+                ax_power.set_xlabel("Time (s)")
+            else:
+                ax_d.set_xlabel("Time (s)")
+            ax_d.set_ylabel("Pressure at D (m)")
+            ax_c.set_ylabel("Pressure at C (m)")
+            ax_c.set_title(scenario.name)
+            ax_c.legend(title="Operation time (s)")
     plt.show()
 
 
-def optimize_closing_time(closing_times=[2, 3, 5, 8, 10]):
-    # ax_s = plt.subplot(3, 1, 1)
-    ax_c = plt.subplot(2, 1, 1)
-    ax_d = plt.subplot(2, 1, 2, sharex=ax_c)
-
-    for closing_time in closing_times:
-        res_snapshots = simulate(
-            FULL_REJECTION,
-            DesignParams(valve_operation_time=closing_time * u.second),
-            settings=SimulationSettings(12 * u.second),
-        )
-        t = np.array([s.t.magnitude for s in res_snapshots])
-        pressure_d = [s.Pd.magnitude for s in res_snapshots]
-        pressure_c = [s.Pc.magnitude for s in res_snapshots]
-        # ax_s.plot(t, hs, label=f"{closing_time} s")
-        ax_d.plot(t, pressure_d, label=f"{closing_time} s")
-        ax_c.plot(t, pressure_c, label=f"{closing_time} s")
-
-    plt.xlabel("Time (s)")
-    ax_d.set_ylabel("Pressure at D (m)")
-    ax_c.set_ylabel("Pressure at C (m)")
-    plt.legend(title="Closing time (s)")
-    plt.show()
-
-
-def optimize_tank_diameter(
-    tank_diameters=[3, 5, 8, 10, 15, 20], safety_margin=3 * u.meters
-):
-    max_heights = []
-    surge_tank_surface_areas = []
+def optimize_tank_diameter(tank_diameters=[3, 5, 8, 10, 15, 20]):
+    required_heights = []
     volume_execavated = []
+    max_hbs = []
+
     for tank_diameter in tank_diameters:
-        res_snapshots = simulate(
-            FULL_REJECTION,
-            DesignParams(tank_diameter * u.meters),
-        )
-        max_height = max(s.Hs for s in res_snapshots) + safety_margin
-        extra_height = max_height - ss_HS
-        surge_tank_surface_areas.append(
-            (extra_height * calc_circumference(tank_diameter)).magnitude
-        )
-        max_heights.append(max_height.magnitude)
-        volume_execavated.append((extra_height * calc_area(tank_diameter)).magnitude)
-    ax = plt.subplot(2, 1, 1)
-    ax.set_ylabel(f"Tank Height in m, incl. {safety_margin}m of freeboard")
-    ax.plot(tank_diameters, max_heights, ".-")
+        tank_diameter_m = tank_diameter * u.meters
+        design_params = DesignParams(surge_tank_diameter=tank_diameter_m)
+        results = simulate(FULL_REJECTION, design_params=design_params)
+
+        required_height = max(s.Hs for s in results) + design_params.freeboard_height
+        max_hb = max(s.Hb for s in results)
+        v = calc_area(tank_diameter_m) * (
+            required_height - design_params.elevation_of_widening
+        ) + calc_area(D) * (design_params.elevation_of_widening - zB)
+
+        required_heights.append(required_height.magnitude)
+        volume_execavated.append(v.magnitude)
+        max_hbs.append(max_hb.magnitude)
+    ax = plt.subplot(3, 1, 1)
+    ax.set_ylabel(
+        f"Required Tank Height (m)\nIncludes {design_params.freeboard_height.magnitude}m of freeboard"
+    )
+    ax.plot(tank_diameters, required_heights, ".-")
     plt.tick_params("x", labelbottom=False)
 
-    ax = plt.subplot(2, 1, 2, sharex=ax)
-    ax.plot(tank_diameters, surge_tank_surface_areas, ".-")
-    ax.set_ylabel("Surge Tank Wall Surface Area (m^2)")
+    ax = plt.subplot(3, 1, 2, sharex=ax)
+    ax.plot(tank_diameters, max_hbs, ".-")
+    ax.set_ylabel("Max Head at B (m)")
+    plt.tick_params("x", labelbottom=False)
+
+    ax = plt.subplot(3, 1, 3, sharex=ax)
+    ax.plot(tank_diameters, volume_execavated, ".-")
+    ax.set_ylabel("Rock excavated (m^3)")
 
     plt.xlabel("Surge Tank Diameter (m)")
+    plt.show()
+
+
+def optimize_widening_height():
+    widening_heights = [350, 385, 400, 415]
+    volume_execavated = []
+    min_hbs = []
+
+    ax = plt.subplot(3, 1, 1)
+    ax.set_ylabel("Surge Tank Level (m)")
+    ax.set_xlabel("Time (min)")
+
+    for widening_height in widening_heights:
+        widening_height_m = widening_height * u.meters
+        design_params = DesignParams(elevation_of_widening=widening_height_m)
+        results = simulate(LOAD_ACCEPTANCE, design_params=design_params)
+
+        t = np.array([s.t.magnitude for s in results])
+        Hs = np.array([s.Hs.magnitude for s in results])
+        required_height = max(s.Hs for s in results) + design_params.freeboard_height
+        min_hb = min(s.Hb for s in results)
+        v = calc_area(design_params.surge_tank_diameter) * (
+            required_height - design_params.elevation_of_widening
+        ) + calc_area(D) * (design_params.elevation_of_widening - zB)
+
+        volume_execavated.append(v.magnitude)
+        min_hbs.append(min_hb.magnitude)
+        ax.plot(t, Hs, label=f"{widening_height} m")
+    plt.legend()
+
+    ax = plt.subplot(3, 1, 2)
+    ax.plot(widening_heights, min_hbs, ".-")
+    ax.set_ylabel("Max Head at B (m)")
+    plt.tick_params("x", labelbottom=False)
+
+    ax = plt.subplot(3, 1, 3, sharex=ax)
+    ax.plot(widening_heights, volume_execavated, ".-")
+    ax.set_ylabel("Rock excavated (m^3)")
+
+    plt.xlabel("Elevation of surge tank (m)")
     plt.show()
 
 
@@ -349,9 +397,7 @@ def visualize_main_scenarios():
     ax_pd = plt.subplot(3, 2, 4, sharex=ax_pc)
     ax_velocity = plt.subplot(3, 2, 5, sharex=ax_surge)
 
-    colors = ["#ff6361", "#ffa600", "#458B74"]
-
-    for i, scenario in enumerate([FULL_REJECTION, HALF_REJECTION, LOAD_ACCEPTANCE]):
+    for scenario in [FULL_REJECTION, HALF_REJECTION, LOAD_ACCEPTANCE]:
         res_snapshots = simulate(scenario)
         t = np.array([s.t.to("minutes").magnitude for s in res_snapshots])
         t_sec = np.array([s.t.magnitude for s in res_snapshots])
@@ -360,16 +406,16 @@ def visualize_main_scenarios():
         Pc = np.array([s.Pc.magnitude for s in res_snapshots])
         Pd = np.array([s.Pd.magnitude for s in res_snapshots])
 
-        ax_surge.plot(t, Hs, label=scenario.name, color=colors[i])
-        ax_pb.plot(t, Pb, label=scenario.name, color=colors[i])
-        ax_pc.plot(t_sec, Pc, label=scenario.name, color=colors[i])
-        ax_pd.plot(t_sec, Pd, label=scenario.name, color=colors[i])
+        ax_surge.plot(t, Hs, label=scenario.name, color=scenario.plotting_color)
+        ax_pb.plot(t, Pb, label=scenario.name, color=scenario.plotting_color)
+        ax_pc.plot(t_sec, Pc, label=scenario.name, color=scenario.plotting_color)
+        ax_pd.plot(t_sec, Pd, label=scenario.name, color=scenario.plotting_color)
 
         ax_velocity.plot(
             t,
             [s.v1.magnitude for s in res_snapshots],
             label=scenario.name,
-            color=colors[i],
+            color=scenario.plotting_color,
             linestyle="--",
         )
 
@@ -377,7 +423,7 @@ def visualize_main_scenarios():
             t,
             [s.v2.magnitude for s in res_snapshots],
             label=scenario.name,
-            color=colors[i],
+            color=scenario.plotting_color,
         )
     ax_pb.set_xlabel("Time (min)")
     ax_pd.set_xlabel("Time (sec)")
@@ -407,15 +453,18 @@ def visualize_main_scenarios():
             label="End",
             color="gray",
         )
-    ax_surge.legend()
+        ax.legend()
+    # ax_surge.legend()
     plt.show()
 
 
 def main():
     visualize_main_scenarios()
-    optimize_open_time()
-    optimize_closing_time()
+    optimize_operation_time()
     optimize_tank_diameter()
+    optimize_widening_height()
+
+
 
 
 if __name__ == "__main__":
