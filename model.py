@@ -57,9 +57,8 @@ minor_loss_coef = 5  # Minor loss coefficient for surge tank
 # Define assumptions
 ############################################
 exit_loss = 0.5  # Assuming there is a diffuser
-speed_of_wave_in_conduit = (
-    1200 * u.meter_per_sec
-)  # Speed of wave in conduit. A bit higher than air to be conservative
+# A typical value for steel pipes. Higher is more conservative.
+speed_of_wave_in_conduit = 1200 * u.meter_per_sec
 
 ############################################
 # Calculated paramters
@@ -338,7 +337,7 @@ def optimize_tank_diameter(
     ax = plt.subplot(2, 1, 2, sharex=ax)
     ax.plot(tank_diameters, surge_tank_surface_areas, ".-")
     ax.set_ylabel("Surge Tank Wall Surface Area (m^2)")
-    
+
     plt.xlabel("Surge Tank Diameter (m)")
     plt.show()
 
