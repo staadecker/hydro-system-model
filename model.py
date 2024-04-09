@@ -235,7 +235,11 @@ def simulate(
 
     results = []
 
-    while t < settings.duration + settings.start_event_time:
+    total_time = settings.duration + settings.start_event_time
+    log_every_x_percent = 0.02
+    last_log = 0
+
+    while t < total_time:
         dv1, dv2, dHs, Hb, Pc, Pd, tau, Power_turbine = model_system(
             t, v1, v2, Hs, design_params, settings, scenario
         )
@@ -247,18 +251,31 @@ def simulate(
         # Update our variables
         t, v1, v2, Hs = (t + dt, v1 + dv1 * dt, v2 + dv2 * dt, Hs + dHs * dt)
 
+        progress = (t / total_time)
+        if progress + log_every_x_percent > last_log:
+            progress = progress.to_reduced_units()
+            progress = min(progress.magnitude, 1)
+            print(f"{progress:.1%} done", end="\r")
+            last_log = progress
+    print("")
+
+
     return results
 
 
 def calc_optimal_time_step(vars, dvars, settings, t):
     """Finds the largest step size between min_dt and max_dt that doesn't result in a variable increasing by more than max_delta %"""
-    if abs(t - settings.start_event_time) < settings.max_dt:
+    upper_bound = settings.max_dt
+    if t < settings.start_event_time:
+        upper_bound = min(upper_bound, settings.start_event_time - t)
+    elif t - settings.start_event_time < settings.max_dt:
         return settings.min_dt
+
     max_rel_change = max([abs(dv) / v for dv, v in zip(dvars, vars) if v != 0])
     if max_rel_change == 0:
         return settings.max_dt
     optimal_dt = settings.max_delta / max_rel_change
-    return clamp(settings.min_dt, optimal_dt, settings.max_dt)
+    return clamp(settings.min_dt, optimal_dt, upper_bound)
 
 
 ############################################
@@ -266,7 +283,7 @@ def calc_optimal_time_step(vars, dvars, settings, t):
 ############################################
 def optimize_operation_time():
     times_to_test = [2, 3, 5, 8, 10]
-    plot_power = True  # Useful flag to make screenshots of plots for the report
+    plot_power = False  # Useful flag to make screenshots of plots for the report
 
     ax_c_open = plt.subplot(3, 2, 1)
     ax_d_open = plt.subplot(3, 2, 3, sharex=ax_c_open)
@@ -311,7 +328,8 @@ def optimize_operation_time():
     plt.show()
 
 
-def optimize_tank_diameter(tank_diameters=[3, 5, 8, 10, 15, 20]):
+def optimize_tank_diameter():
+    tank_diameters = [5, 8, 10, 15]
     required_heights = []
     volume_execavated = []
     max_hbs = []
@@ -379,7 +397,7 @@ def optimize_widening_height():
 
     ax = plt.subplot(3, 1, 2)
     ax.plot(widening_heights, min_hbs, ".-")
-    ax.set_ylabel("Max Head at B (m)")
+    ax.set_ylabel("Min Head at B (m)")
     plt.tick_params("x", labelbottom=False)
 
     ax = plt.subplot(3, 1, 3, sharex=ax)
@@ -442,7 +460,7 @@ def visualize_main_scenarios():
         ax.axvline(
             DEFAULT_SETTINGS.start_event_time.to(unit).magnitude,
             linestyle=":",
-            label="Start",
+            # label="Start",
             color="gray",
         )
         ax.axvline(
@@ -450,7 +468,7 @@ def visualize_main_scenarios():
             .to(unit)
             .magnitude,
             linestyle=":",
-            label="End",
+            # label="End",
             color="gray",
         )
         ax.legend()
@@ -463,8 +481,6 @@ def main():
     optimize_operation_time()
     optimize_tank_diameter()
     optimize_widening_height()
-
-
 
 
 if __name__ == "__main__":
